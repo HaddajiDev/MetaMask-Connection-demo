@@ -1,4 +1,3 @@
-// types/metamask.ts
 import { MetaMaskSDK } from '@metamask/sdk';
 
 export interface NetworkConfig {
