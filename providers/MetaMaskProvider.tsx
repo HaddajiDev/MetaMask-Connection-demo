@@ -48,28 +48,13 @@ interface MetaMaskProviderProps {
   children: ReactNode;
 }
 
-// Predefined network configurations
 export const NETWORKS = {
-  ETHEREUM: {
-    chainId: '0x1',
-    chainName: 'Ethereum Mainnet',
-    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    rpcUrls: ['https://mainnet.infura.io/v3/YOUR_INFURA_KEY'],
-    blockExplorerUrls: ['https://etherscan.io'],
-  },
   ARBITRUM: {
     chainId: '0xa4b1',
     chainName: 'Arbitrum One',
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
     rpcUrls: ['https://arb1.arbitrum.io/rpc'],
     blockExplorerUrls: ['https://arbiscan.io'],
-  },
-  POLYGON: {
-    chainId: '0x89',
-    chainName: 'Polygon Mainnet',
-    nativeCurrency: { name: 'MATIC', symbol: 'MATIC', decimals: 18 },
-    rpcUrls: ['https://polygon-rpc.com'],
-    blockExplorerUrls: ['https://polygonscan.com'],
   },
 };
 
@@ -233,8 +218,7 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
       const handleChainChanged = (newChainId: string) => {
         console.log('Chain changed to:', newChainId);
         setChainId(newChainId);
-        // Optionally reload the page to reset the dapp state
-        // window.location.reload();
+
       };
 
       const handleDisconnect = (error: any) => {
@@ -242,12 +226,10 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
         disconnect();
       };
 
-      // Add event listeners
       window.ethereum.on('accountsChanged', handleAccountsChanged);
       window.ethereum.on('chainChanged', handleChainChanged);
       window.ethereum.on('disconnect', handleDisconnect);
 
-      // Cleanup function
       return () => {
         if (window.ethereum?.removeListener) {
           window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
@@ -285,12 +267,10 @@ export const useMetaMask = (): MetaMaskContextType => {
   return context;
 };
 
-// Helper function to format chain ID
 export const formatChainId = (chainId: string): number => {
   return parseInt(chainId, 16);
 };
 
-// Helper function to get network name
 export const getNetworkName = (chainId: string): string => {
   const networks: { [key: string]: string } = {
     '0x1': 'Ethereum Mainnet',

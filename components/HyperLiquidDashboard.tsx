@@ -6,8 +6,7 @@ import * as hl from '@nktkas/hyperliquid';
 
 const MY_VAULT_ADDRESS = process.env.NEXT_PUBLIC_MY_VAULT_ADDRESS;
 
-// HyperLiquid works on Arbitrum One
-const HYPERLIQUID_CHAIN_ID = '0xa4b1'; // Arbitrum One
+const HYPERLIQUID_CHAIN_ID = '0xa4b1';
 
 export default function HyperLiquidDashboard() {
   const { account, isConnected, connect, chainId, switchChain, addChain } = useMetaMask();
@@ -21,7 +20,6 @@ export default function HyperLiquidDashboard() {
   
   const [isTestnet] = useState(false);
 
-  // Check if we're on the correct network
   const isCorrectNetwork = chainId === HYPERLIQUID_CHAIN_ID;
   const currentNetworkName = chainId ? getNetworkName(chainId) : 'Unknown';
 
@@ -43,7 +41,6 @@ export default function HyperLiquidDashboard() {
     } catch (error: any) {
       console.error('Failed to switch network:', error);
       if (error.code === 4902) {
-        // Network not added, try to add it
         try {
           await addChain(NETWORKS.ARBITRUM);
           await switchChain(HYPERLIQUID_CHAIN_ID);
