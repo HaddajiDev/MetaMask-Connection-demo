@@ -7,6 +7,7 @@ import * as hl from '@nktkas/hyperliquid';
 const MY_VAULT_ADDRESS = process.env.NEXT_PUBLIC_MY_VAULT_ADDRESS;
 
 const HYPERLIQUID_CHAIN_ID = '0xa4b1';
+const ARBITRUM_CHAIN_ID_DECIMAL = 42161;
 
 export default function HyperLiquidDashboard() {
   const { account, isConnected, connect, chainId, switchChain, addChain } = useMetaMask();
@@ -26,13 +27,69 @@ export default function HyperLiquidDashboard() {
   const transport = new hl.HttpTransport();
   const publicClient = new hl.InfoClient({ transport });
   
+  // Create wallet client with proper chain ID configuration
   const walletClient = isConnected && window.ethereum && isCorrectNetwork
     ? new hl.ExchangeClient({ 
-        wallet: window.ethereum,
+        wallet: {
+          ...window.ethereum,
+          // Override the chain ID methods to ensure consistency
+          request: async (args: any) => {
+            // Intercept eth_chainId requests to ensure consistent chain ID
+            if (args.method === 'eth_chainId') {
+              return HYPERLIQUID_CHAIN_ID;
+            }
+            return window.ethereum.request(args);
+          }
+        },
         transport,
         isTestnet: isTestnet,
+        signatureChainId: HYPERLIQUID_CHAIN_ID, // Use hex format consistently
       })
     : null;
+
+  // Alternative wallet client configuration that might work better
+  const createWalletClient = () => {
+    if (!isConnected || !window.ethereum || !isCorrectNetwork) {
+      return null;
+    }
+
+    try {
+      // Create a custom wallet object that ensures proper chain ID handling
+      const customWallet = {
+        ...window.ethereum,
+        request: async (args: any) => {
+          const result = await window.ethereum.request(args);
+          
+          // Ensure chain ID is always returned in the expected format
+          if (args.method === 'eth_chainId') {
+            // Convert to hex if it's decimal
+            if (typeof result === 'number') {
+              return `0x${result.toString(16)}`;
+            }
+            // Ensure it's the correct Arbitrum chain ID
+            if (result === '0xa4b1' || result === ARBITRUM_CHAIN_ID_DECIMAL || result === '42161') {
+              return HYPERLIQUID_CHAIN_ID;
+            }
+          }
+          
+          return result;
+        }
+      };
+
+      return new hl.ExchangeClient({ 
+        wallet: customWallet,
+        transport,
+        isTestnet: isTestnet,
+        signatureChainId: HYPERLIQUID_CHAIN_ID,
+      });
+    } catch (error) {
+      console.error('Error creating wallet client:', error);
+      return null;
+    }
+  };
+
+  // Use the alternative wallet client
+  const alternativeWalletClient = createWalletClient();
 
   const handleNetworkSwitch = async () => {
     try {
@@ -91,8 +148,25 @@ export default function HyperLiquidDashboard() {
     }
   };
 
+  const ensureCorrectNetwork = async () => {
+    if (!isCorrectNetwork) {
+      throw new Error('Please switch to Arbitrum One network first');
+    }
+    
+    // Double-check the network is correct before proceeding
+    const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+    console.log('Current chain ID from MetaMask:', currentChainId);
+    console.log('Expected chain ID:', HYPERLIQUID_CHAIN_ID);
+    
+    if (currentChainId !== HYPERLIQUID_CHAIN_ID) {
+      throw new Error(`Network mismatch. Expected ${HYPERLIQUID_CHAIN_ID}, got ${currentChainId}`);
+    }
+  };
+
   const handleVaultDeposit = async () => {
-    if (!walletClient) {
+    const clientToUse = alternativeWalletClient || walletClient;
+    
+    if (!clientToUse) {
       if (!isConnected) {
         setError('Please connect your wallet first');
       } else if (!isCorrectNetwork) {
@@ -110,9 +184,13 @@ export default function HyperLiquidDashboard() {
       setIsLoading(true);
       setError(null);
 
-      console.log('Depositing to vault:', MY_VAULT_ADDRESS, 'Amount:', actionAmount);
+      // Ensure we're on the correct network
+      await ensureCorrectNetwork();
 
-      const result = await walletClient.vaultTransfer({
+      console.log('Depositing to vault:', MY_VAULT_ADDRESS, 'Amount:', actionAmount);
+      console.log('Using wallet client with chain ID:', HYPERLIQUID_CHAIN_ID);
+
+      const result = await clientToUse.vaultTransfer({
         vaultAddress: MY_VAULT_ADDRESS,
         isDeposit: true,
         usd: parseFloat(actionAmount)
@@ -129,14 +207,22 @@ export default function HyperLiquidDashboard() {
       }
     } catch (err) {
       console.error('Deposit error:', err);
-      setError(err instanceof Error ? err.message : 'Deposit failed');
+      
+      // Provide more specific error messages for chain ID issues
+      if (err instanceof Error && err.message.includes('chainId')) {
+        setError(`Chain ID mismatch error. Please ensure MetaMask is on Arbitrum One (Chain ID: ${ARBITRUM_CHAIN_ID_DECIMAL}). Current error: ${err.message}`);
+      } else {
+        setError(err instanceof Error ? err.message : 'Deposit failed');
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleVaultWithdraw = async () => {
-    if (!walletClient) {
+    const clientToUse = alternativeWalletClient || walletClient;
+    
+    if (!clientToUse) {
       if (!isConnected) {
         setError('Please connect your wallet first');
       } else if (!isCorrectNetwork) {
@@ -154,9 +240,12 @@ export default function HyperLiquidDashboard() {
       setIsLoading(true);
       setError(null);
 
+      // Ensure we're on the correct network
+      await ensureCorrectNetwork();
+
       console.log('Withdrawing from vault:', MY_VAULT_ADDRESS, 'Amount:', actionAmount);
 
-      const result = await walletClient.vaultTransfer({
+      const result = await clientToUse.vaultTransfer({
         vaultAddress: MY_VAULT_ADDRESS,
         isDeposit: false,
         usd: parseFloat(actionAmount)
@@ -173,14 +262,22 @@ export default function HyperLiquidDashboard() {
       }
     } catch (err) {
       console.error('Withdrawal error:', err);
-      setError(err instanceof Error ? err.message : 'Withdrawal failed');
+      
+      // Provide more specific error messages for chain ID issues
+      if (err instanceof Error && err.message.includes('chainId')) {
+        setError(`Chain ID mismatch error. Please ensure MetaMask is on Arbitrum One (Chain ID: ${ARBITRUM_CHAIN_ID_DECIMAL}). Current error: ${err.message}`);
+      } else {
+        setError(err instanceof Error ? err.message : 'Withdrawal failed');
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleBridgeWithdraw = async () => {
-    if (!walletClient || !account) {
+    const clientToUse = alternativeWalletClient || walletClient;
+    
+    if (!clientToUse || !account) {
       if (!isConnected) {
         setError('Please connect your wallet first');
       } else if (!isCorrectNetwork) {
@@ -198,9 +295,12 @@ export default function HyperLiquidDashboard() {
       setIsLoading(true);
       setError(null);
 
+      // Ensure we're on the correct network
+      await ensureCorrectNetwork();
+
       console.log('Bridge withdrawal to:', account, 'Amount:', actionAmount);
 
-      const result = await walletClient.withdraw3({
+      const result = await clientToUse.withdraw3({
         destination: account,
         amount: actionAmount
       });
@@ -216,7 +316,13 @@ export default function HyperLiquidDashboard() {
       }
     } catch (err) {
       console.error('Bridge withdrawal error:', err);
-      setError(err instanceof Error ? err.message : 'Bridge withdrawal failed');
+      
+      // Provide more specific error messages for chain ID issues
+      if (err instanceof Error && err.message.includes('chainId')) {
+        setError(`Chain ID mismatch error. Please ensure MetaMask is on Arbitrum One (Chain ID: ${ARBITRUM_CHAIN_ID_DECIMAL}). Current error: ${err.message}`);
+      } else {
+        setError(err instanceof Error ? err.message : 'Bridge withdrawal failed');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -242,7 +348,7 @@ export default function HyperLiquidDashboard() {
               {!isCorrectNetwork && (
                 <div className="mt-3">
                   <p className="text-orange-600 font-semibold mb-2">
-                    ⚠️ Wrong Network - HyperLiquid requires Arbitrum One
+                    ⚠️ Wrong Network - HyperLiquid requires Arbitrum One (Chain ID: {ARBITRUM_CHAIN_ID_DECIMAL})
                   </p>
                   <button 
                     onClick={handleNetworkSwitch}
@@ -296,9 +402,11 @@ export default function HyperLiquidDashboard() {
           <br />Chain ID: {chainId || 'None'} ({chainId ? formatChainId(chainId) : 'N/A'})
           <br />Network: {currentNetworkName}
           <br />Correct Network: {isCorrectNetwork ? 'Yes' : 'No'}
+          <br />Expected Chain ID: {HYPERLIQUID_CHAIN_ID} ({ARBITRUM_CHAIN_ID_DECIMAL})
           <br />Testnet: {isTestnet ? 'Yes' : 'No'}
           <br />Vault Details: {vaultDetails ? 'Loaded' : 'Not loaded'}
-          <br />Wallet Client: {walletClient ? 'Ready' : 'Not ready'}
+          <br />Original Wallet Client: {walletClient ? 'Ready' : 'Not ready'}
+          <br />Alternative Wallet Client: {alternativeWalletClient ? 'Ready' : 'Not ready'}
         </div>
       )}
 
@@ -387,7 +495,7 @@ export default function HyperLiquidDashboard() {
         <div className="bg-yellow-50 rounded-lg border-2 border-yellow-200 p-6 text-center">
           <h3 className="text-lg font-bold text-yellow-800 mb-2">Network Switch Required</h3>
           <p className="text-yellow-700 mb-4">
-            HyperLiquid operations require the Arbitrum One network. Please switch networks to continue.
+            HyperLiquid operations require the Arbitrum One network (Chain ID: {ARBITRUM_CHAIN_ID_DECIMAL}). Please switch networks to continue.
           </p>
           <button 
             onClick={handleNetworkSwitch}
