@@ -4,8 +4,7 @@ import { useState, useEffect } from 'react';
 import { useMetaMask } from '../providers/MetaMaskProvider';
 import * as hl from '@nktkas/hyperliquid';
 
-// Replace with your vault address
-const MY_VAULT_ADDRESS = process.env.NEXT_PUBLIC_MY_VAULT_ADDRESS || "0x...";
+const MY_VAULT_ADDRESS = process.env.NEXT_PUBLIC_MY_VAULT_ADDRESS;
 
 export default function HyperLiquidDashboard() {
   const { account, isConnected, connect } = useMetaMask();
@@ -16,149 +15,26 @@ export default function HyperLiquidDashboard() {
   const [vaultDetails, setVaultDetails] = useState<any>(null);
   const [userVaultDetails, setUserVaultDetails] = useState<any>(null);
   const [vaultSummaries, setVaultSummaries] = useState<any[]>([]);
-  const [currentChainId, setCurrentChainId] = useState<string>('');
-  // process.env.NODE_ENV === 'development' || process.env.NEXT_PUBLIC_USE_TESTNET === 'true';
-  // FIXED: Better network detection logic
-  const isTestnet = false
+  
+  const [isTestnet] = useState(false);
 
-  // FIXED: Updated network checking logic
-  const checkNetwork = async () => {
-    if (!window.ethereum) return false;
-    
-    try {
-      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-      const chainIdNum = parseInt(chainId, 16);
-      setCurrentChainId(chainIdNum.toString());
-      
-      // FIXED: Simplified network logic based on the GitHub issue
-      if (isTestnet) {
-        // For testnet/development, we expect HyperLiquid testnet (998)
-        if (chainIdNum !== 998) {
-          try {
-            await window.ethereum.request({
-              method: 'wallet_switchEthereumChain',
-              params: [{ chainId: '0x3e6' }], // 998 in hex
-            });
-            return true;
-          } catch (switchError: any) {
-            if (switchError.code === 4902) {
-              // Add testnet network if it doesn't exist
-              try {
-                await window.ethereum.request({
-                  method: 'wallet_addEthereumChain',
-                  params: [{
-                    chainId: '0x3e6', // 998 in hex
-                    chainName: 'HyperLiquid Testnet',
-                    nativeCurrency: {
-                      name: 'ETH',
-                      symbol: 'ETH',
-                      decimals: 18,
-                    },
-                    rpcUrls: ['https://api.hyperliquid-testnet.xyz/evm'],
-                    blockExplorerUrls: ['https://explorer.hyperliquid-testnet.xyz'],
-                  }],
-                });
-                return true;
-              } catch (addError) {
-                console.error('Could not add testnet:', addError);
-                return false;
-              }
-            } else {
-              console.error('Could not switch to testnet:', switchError);
-              return false;
-            }
-          }
-        }
-        return true; // Already on testnet
-      } else {
-        // Production mode - Arbitrum One (42161)
-        const expectedChainId = 42161;
-        
-        if (chainIdNum !== expectedChainId) {
-          try {
-            await window.ethereum.request({
-              method: 'wallet_switchEthereumChain',
-              params: [{ chainId: '0xa4b1' }], // 42161 in hex
-            });
-            return true;
-          } catch (switchError: any) {
-            if (switchError.code === 4902) {
-              try {
-                await window.ethereum.request({
-                  method: 'wallet_addEthereumChain',
-                  params: [{
-                    chainId: '0xa4b1',
-                    chainName: 'Arbitrum One',
-                    nativeCurrency: {
-                      name: 'ETH',
-                      symbol: 'ETH',
-                      decimals: 18,
-                    },
-                    rpcUrls: ['https://arb1.arbitrum.io/rpc'],
-                    blockExplorerUrls: ['https://arbiscan.io'],
-                  }],
-                });
-                return true;
-              } catch (addError) {
-                console.error('Failed to add Arbitrum One:', addError);
-                return false;
-              }
-            } else {
-              console.error('Failed to switch to Arbitrum One:', switchError);
-              return false;
-            }
-          }
-        }
-        return true;
-      }
-    } catch (error) {
-      console.error('Network check failed:', error);
-      return false;
-    }
-  };
 
-  // FIXED: Create wallet client only when needed and with proper network validation
-  const createWalletClient = () => {
-    if (!isConnected || !window.ethereum) return null;
-    
-    const chainIdNum = parseInt(currentChainId);
-    const expectedChainId = isTestnet ? 998 : 42161;
-    
-    if (chainIdNum !== expectedChainId) {
-      console.warn(`Wrong network: ${chainIdNum}, expected: ${expectedChainId}`);
-      return null;
-    }
-
-    try {
-      return new hl.ExchangeClient({ 
-        wallet: window.ethereum,
-        transport: new hl.HttpTransport({ isTestnet }),
-        isTestnet: isTestnet,
-      });
-    } catch (error) {
-      console.error('Failed to create wallet client:', error);
-      return null;
-    }
-  };
-
-  // Initialize SDK clients
-  const transport = new hl.HttpTransport({ isTestnet });
+  const transport = new hl.HttpTransport();
   const publicClient = new hl.InfoClient({ transport });
+  
+  const walletClient = isConnected && window.ethereum 
+    ? new hl.ExchangeClient({ 
+        wallet: window.ethereum,
+        transport,
+        isTestnet: isTestnet,
+        
+      })
+    : null;
 
-  // Fetch vault details
   const fetchVaultDetails = async () => {
     if (!MY_VAULT_ADDRESS || MY_VAULT_ADDRESS === "0x...") {
-      setError('Vault address not configured. Please set NEXT_PUBLIC_MY_VAULT_ADDRESS environment variable.');
+      setError('Vault address not configured');
       return;
-    }
-
-    // Check network before making any calls
-    if (isConnected) {
-      const networkOk = await checkNetwork();
-      if (!networkOk) {
-        setError(`Please switch MetaMask to ${isTestnet ? 'HyperLiquid Testnet (Chain ID: 998)' : 'Arbitrum One (Chain ID: 42161)'}`);
-        return;
-      }
     }
 
     try {
@@ -167,12 +43,10 @@ export default function HyperLiquidDashboard() {
       
       console.log('Fetching vault details for:', MY_VAULT_ADDRESS);
       
-      // Fetch general vault details
       const details = await publicClient.vaultDetails({ vaultAddress: MY_VAULT_ADDRESS });
       console.log('Vault details:', details);
       setVaultDetails(details);
       
-      // Fetch user-specific details if connected
       if (account) {
         console.log('Fetching user-specific vault details for:', account);
         const userDetails = await publicClient.vaultDetails({ 
@@ -183,7 +57,6 @@ export default function HyperLiquidDashboard() {
         setUserVaultDetails(userDetails);
       }
       
-      // Fetch vault summaries
       const summaries = await publicClient.vaultSummaries();
       console.log('Vault summaries:', summaries);
       setVaultSummaries(summaries);
@@ -196,11 +69,9 @@ export default function HyperLiquidDashboard() {
     }
   };
 
-  // Handle vault deposit
   const handleVaultDeposit = async () => {
-    const walletClient = createWalletClient();
     if (!walletClient) {
-      setError('Please connect your wallet and ensure you\'re on the correct network');
+      setError('Please connect your wallet first');
       return;
     }
 
@@ -238,11 +109,9 @@ export default function HyperLiquidDashboard() {
     }
   };
 
-  // Handle vault withdrawal
   const handleVaultWithdraw = async () => {
-    const walletClient = createWalletClient();
     if (!walletClient) {
-      setError('Please connect your wallet and ensure you\'re on the correct network');
+      setError('Please connect your wallet first');
       return;
     }
 
@@ -280,11 +149,9 @@ export default function HyperLiquidDashboard() {
     }
   };
 
-  // Handle bridge withdrawal
   const handleBridgeWithdraw = async () => {
-    const walletClient = createWalletClient();
     if (!walletClient || !account) {
-      setError('Please connect your wallet and ensure you\'re on the correct network');
+      setError('Please connect your wallet first');
       return;
     }
 
@@ -321,92 +188,30 @@ export default function HyperLiquidDashboard() {
     }
   };
 
-  // FIXED: Updated Network Status component
-  const NetworkStatus = () => {
-    useEffect(() => {
-      const getCurrentChain = async () => {
-        if (window.ethereum) {
-          try {
-            const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-            const chainIdNum = parseInt(chainId, 16);
-            setCurrentChainId(chainIdNum.toString());
-          } catch (error) {
-            console.error('Failed to get chain ID:', error);
-          }
-        }
-      };
-
-      getCurrentChain();
-
-      if (window.ethereum) {
-        const handleChainChanged = (chainId: string) => {
-          const chainIdNum = parseInt(chainId, 16);
-          setCurrentChainId(chainIdNum.toString());
-          // Refresh data when chain changes
-          fetchVaultDetails();
-        };
-
-        window.ethereum.on('chainChanged', handleChainChanged);
-        return () => window.ethereum.removeListener('chainChanged', handleChainChanged);
-      }
-    }, [isConnected]);
-
-    const expectedChain = isTestnet ? '998' : '42161';
-    const expectedChainName = isTestnet ? 'HyperLiquid Testnet' : 'Arbitrum One';
-    const isCorrectNetwork = currentChainId === expectedChain;
-
-    if (!isConnected) return null;
-
-    return (
-      <div className={`p-3 rounded-lg text-sm ${isCorrectNetwork ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-        <div className="flex justify-between items-center">
-          <span>
-            Network: {currentChainId} ({currentChainId === '998' ? 'HyperLiquid Testnet' : currentChainId === '42161' ? 'Arbitrum One' : 'Unknown'})
-            {!isCorrectNetwork && ` (Expected: ${expectedChain} - ${expectedChainName})`}
-          </span>
-          {!isCorrectNetwork && (
-            <button
-              onClick={checkNetwork}
-              className="ml-2 px-3 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700"
-            >
-              Switch to {expectedChainName}
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  // Initial data fetch
   useEffect(() => {
     fetchVaultDetails();
   }, [account, isConnected]);
 
-  // FIXED: Update current chain ID on connection
-  useEffect(() => {
-    const updateChainId = async () => {
-      if (isConnected && window.ethereum) {
-        try {
-          const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-          const chainIdNum = parseInt(chainId, 16);
-          setCurrentChainId(chainIdNum.toString());
-        } catch (error) {
-          console.error('Failed to get initial chain ID:', error);
-        }
-      }
-    };
-
-    updateChainId();
-  }, [isConnected]);
-
   const formatAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
+
+  const renderFollowerDetails = (follower: any, title: string) => (
+    <div className="bg-white rounded-lg shadow-md p-6">
+      <h3 className="text-xl font-bold mb-4 text-gray-800">{title}</h3>
+      <div className="space-y-2">
+        <p><strong>User:</strong> {formatAddress(follower.user)}</p>
+        <p><strong>Vault Equity:</strong> ${parseFloat(follower.vaultEquity).toFixed(2)}</p>
+        <p><strong>PNL:</strong> ${parseFloat(follower.pnl).toFixed(2)}</p>
+        <p><strong>All Time PNL:</strong> ${parseFloat(follower.allTimePnl).toFixed(2)}</p>
+        <p><strong>Days Following:</strong> {follower.daysFollowing}</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-6">
-      {/* Header */}
       <div className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-2xl font-bold mb-4 text-center text-gray-800">
-          HyperLiquid Vault Manager {isTestnet ? '(Testnet)' : '(Mainnet)'}
+          HyperLiquid Vault Manager
         </h2>
         <div className="text-center space-y-2">
           {isConnected ? (
@@ -435,9 +240,6 @@ export default function HyperLiquidDashboard() {
         </div>
       </div>
 
-      {/* Network Status */}
-      <NetworkStatus />
-
       {error && (
         <div className="text-red-600 bg-red-100 p-4 rounded-lg text-center">
           <strong>Error:</strong> {error}
@@ -451,20 +253,16 @@ export default function HyperLiquidDashboard() {
         </div>
       )}
 
-      {/* Debug Information */}
       {process.env.NODE_ENV === 'development' && (
         <div className="bg-gray-100 rounded-lg p-4 text-sm">
           <strong>Debug Info:</strong>
           <br />Vault Address: {MY_VAULT_ADDRESS}
           <br />Connected Account: {account || 'None'}
-          <br />Using Testnet: {isTestnet ? 'Yes' : 'No'}
-          <br />Current Chain ID: {currentChainId || 'Unknown'}
-          <br />Expected Chain ID: {isTestnet ? '998 (HyperLiquid Testnet)' : '42161 (Arbitrum One)'}
+          <br />Testnet: {isTestnet ? 'Yes' : 'No'}
           <br />Vault Details: {vaultDetails ? 'Loaded' : 'Not loaded'}
         </div>
       )}
 
-      {/* Vault Details */}
       {vaultDetails?.followers && vaultDetails.followers.length > 0 && (
         <div className="bg-white rounded-lg shadow-md p-6">
           <h3 className="text-xl font-bold mb-4 text-gray-800">
@@ -492,7 +290,6 @@ export default function HyperLiquidDashboard() {
         </div>
       )}
 
-      {/* User's Specific Vault Details */}
       {isConnected && userVaultDetails?.followers && userVaultDetails.followers.length > 0 && (
         <div className="bg-blue-50 rounded-lg border-2 border-blue-200 p-6">
           <h3 className="text-xl font-bold mb-4 text-blue-800">
@@ -509,7 +306,6 @@ export default function HyperLiquidDashboard() {
         </div>
       )}
 
-      {/* Vault Operations */}
       {isConnected && (
         <div className="bg-white rounded-lg shadow-md p-6 border-2 border-indigo-500">
           <h3 className="text-xl font-bold mb-4 text-gray-800">Vault Operations</h3>
@@ -524,36 +320,30 @@ export default function HyperLiquidDashboard() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <button 
                 onClick={handleVaultDeposit} 
-                disabled={isLoading || currentChainId !== (isTestnet ? '998' : '42161')}
+                disabled={isLoading}
                 className="bg-green-500 text-white py-2 rounded-lg font-semibold hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Processing...' : 'Vault Deposit'}
               </button>
               <button 
                 onClick={handleVaultWithdraw} 
-                disabled={isLoading || currentChainId !== (isTestnet ? '998' : '42161')}
+                disabled={isLoading}
                 className="bg-orange-500 text-white py-2 rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Processing...' : 'Vault Withdraw'}
               </button>
               <button 
                 onClick={handleBridgeWithdraw} 
-                disabled={isLoading || currentChainId !== (isTestnet ? '998' : '42161')}
-                className="bg-red-500 text-white py-2 rounded-lg font-semibold hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={isLoading}
+                className="bg-red-500 text-white py-2 rounded-lg font-semibtml hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Processing...' : 'Bridge Withdraw'}
               </button>
             </div>
-            {currentChainId !== (isTestnet ? '998' : '42161') && (
-              <p className="text-red-600 text-sm text-center">
-                Operations disabled - please switch to the correct network
-              </p>
-            )}
           </div>
         </div>
       )}
 
-      {/* Vault Summaries */}
       {vaultSummaries.length > 0 && (
         <div className="bg-white rounded-lg shadow-md p-6">
           <h3 className="text-xl font-bold mb-4 text-gray-800">All Vault Summaries</h3>
@@ -575,7 +365,6 @@ export default function HyperLiquidDashboard() {
         </div>
       )}
 
-      {/* Non-connected message */}
       {!isConnected && (
         <div className="bg-gray-100 rounded-lg p-6 text-center">
           <p className="text-gray-600">
@@ -584,7 +373,6 @@ export default function HyperLiquidDashboard() {
         </div>
       )}
 
-      {/* Refresh button */}
       <div className="text-center">
         <button 
           onClick={fetchVaultDetails}
