@@ -1,20 +1,25 @@
-import type { Metadata } from 'next'
-import './globals.css'
-import { MetaMaskProvider } from '../providers/MetaMaskProvider';
+import type { Metadata } from "next";
+import "./globals.css";
+import { Providers} from "./Providers"
+
 
 export const metadata: Metadata = {
-  title: 'next js app',
-  description: '',
-}
+  title: "HyperLiquid Dashboard",
+};
+
 
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode
+  children: React.ReactNode;
 }>) {
   return (
     <html lang="en">
-      <body><MetaMaskProvider>{children}</MetaMaskProvider></body>
+      <body>
+          <Providers>
+            {children}
+          </Providers>        
+      </body>
     </html>
-  )
+  );
 }

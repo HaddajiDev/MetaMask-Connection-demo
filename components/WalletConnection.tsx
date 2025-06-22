@@ -63,7 +63,7 @@ const WalletConnection: React.FC = () => {
     setIsLoading(true);
     try {
       const txParams: TransactionParameters = {
-        to: '', // hyperliquid Vault Hash
+        to: '0x742d35cc6435c2c0d2b4f3b3e7a6b3f4c6d8e9f0', // Example address
         value: '0x1c6bf52634000', // 0.0005 ETH in wei
         from: account,
       };

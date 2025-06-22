@@ -21,18 +21,19 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
   useEffect(() => {
     const initSDK = async (): Promise<void> => {
       const dappMetadata: DappMetadata = {
-        name: "Your App Name",
+        name: process.env.NEXT_PUBLIC_APP_NAME || "Your App Name",
         url: typeof window !== 'undefined' ? window.location.origin : "http://localhost:3000",
       };
 
       const MMSDK = new MetaMaskSDK({
         dappMetadata,
-        infuraAPIKey: "98824a8e619642e79d0e2705c9180849",
+        infuraAPIKey: process.env.NEXT_PUBLIC_INFURA_API_KEY,
       });
 
       await MMSDK.init();
       setSdk(MMSDK);
 
+      // Check if already connected
       try {
         const accounts = await MMSDK.getProvider()?.request({
           method: 'eth_accounts',
@@ -42,6 +43,7 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
           setAccount(accounts[0]);
           setIsConnected(true);
           
+          // Get chain ID
           const currentChainId = await MMSDK.getProvider()?.request({
             method: 'eth_chainId',
           }) as string;
@@ -51,6 +53,7 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
         console.error('Error checking existing connection:', error);
       }
 
+      // Set up event listeners
       const provider = MMSDK.getProvider();
       if (provider) {
         provider.on('accountsChanged', (...args: unknown[]) => {
@@ -92,6 +95,7 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
         setAccount(accounts[0]);
         setIsConnected(true);
         
+        // Get chain ID after connecting
         const currentChainId = await sdk.getProvider()?.request({
           method: 'eth_chainId',
         }) as string;
@@ -125,11 +129,13 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
     }
     
     try {
+      // First, try to switch to the network
       await sdk.getProvider()?.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId }],
       });
     } catch (switchError: any) {
+      // If the network doesn't exist (error code 4902), try to add it
       if (switchError.code === 4902) {
         const networkConfig = getNetworkConfig(chainId);
         if (networkConfig) {
@@ -168,6 +174,7 @@ export const MetaMaskProvider: React.FC<MetaMaskProviderProps> = ({ children }) 
     }
   };
 
+  // Helper function to get predefined network configurations
   const getNetworkConfig = (chainId: string): NetworkConfig | null => {
     const networks: Record<string, NetworkConfig> = {
       '0x1': {

@@ -1,17 +1,15 @@
-import WalletConnection from '../components/WalletConnection';
+// app/page.tsx
+import { MetaMaskProvider } from '@/providers/MetaMaskProvider';
+import HyperLiquidDashboard from '@/components/HyperLiquidDashboard';
+import WalletConnection from '@/components/WalletConnection';
 
-const Home: React.FC = () => {
+export default function Home() {
   return (
-    <div className="min-h-screen bg-gray-100 py-12 px-4">
-      <div className="max-w-4xl mx-auto">        
-        
-        <div className="">
-          <WalletConnection />         
-          
-        </div>
-      </div>
-    </div>
+    <MetaMaskProvider>
+      <main className="bg-gray-100 min-h-screen py-8">
+        <WalletConnection />
+        <HyperLiquidDashboard />
+      </main>
+    </MetaMaskProvider>
   );
-};
-
-export default Home;
+}
