@@ -1,338 +1,433 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useMetaMask, getNetworkName, formatChainId, NETWORKS } from '../providers/MetaMaskProvider';
-import * as hl from '@nktkas/hyperliquid';
+import { useMetaMask } from '../providers/MetaMaskProvider';
+import axios from 'axios';
 
+const HYPERLIQUID_API_URL = 'https://api.hyperliquid.xyz';
 const MY_VAULT_ADDRESS = process.env.NEXT_PUBLIC_MY_VAULT_ADDRESS;
+const ADMIN_WALLET_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_WALLET_ADDRESS;
 
-const HYPERLIQUID_CHAIN_ID = '0xa4b1';
-const ARBITRUM_CHAIN_ID_DECIMAL = 42161;
+interface ConfigInfo {
+  network: string;
+  base_url: string;
+  wallet_address: string;
+}
+
+interface Follower {
+  user: string;
+  vaultEquity: string;
+  pnl: string;
+  allTimePnl: string;
+  daysFollowing: number;
+  vaultEntryTime: number;
+  lockupUntil: number;
+}
+
+interface VaultDetails {
+  followers: Follower[];
+}
 
 export default function HyperLiquidDashboard() {
-  const { account, isConnected, connect, chainId, switchChain, addChain } = useMetaMask();
+  const { account, isConnected, connect, disconnect } = useMetaMask();
 
+  const [configInfo, setConfigInfo] = useState<ConfigInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isOwnerConnected, setIsOwnerConnected] = useState<boolean>(false);
   const [actionAmount, setActionAmount] = useState<string>('');
-  const [vaultDetails, setVaultDetails] = useState<any>(null);
-  const [userVaultDetails, setUserVaultDetails] = useState<any>(null);
-  const [vaultSummaries, setVaultSummaries] = useState<any[]>([]);
-  
-  const [isTestnet] = useState(false);
+  const [leaderVaultDetails, setLeaderVaultDetails] = useState<VaultDetails | null>(null);
+  const [connectedUserSpecificVaultDetails, setConnectedUserSpecificVaultDetails] = useState<Follower | null>(null);
 
-  const isCorrectNetwork = chainId === HYPERLIQUID_CHAIN_ID;
-  const currentNetworkName = chainId ? getNetworkName(chainId) : 'Unknown';
+  // Initialize config info
+  useEffect(() => {
+    setConfigInfo({
+      network: 'mainnet',
+      base_url: HYPERLIQUID_API_URL,
+      wallet_address: ADMIN_WALLET_ADDRESS || "0x..."
+    });
+  }, []);
 
-  const transport = new hl.HttpTransport();
-  const publicClient = new hl.InfoClient({ transport });
-  
-  // Create wallet client with proper chain ID configuration
-  const walletClient = isConnected && window.ethereum && isCorrectNetwork
-    ? new hl.ExchangeClient({ 
-        wallet: {
-          ...window.ethereum,
-          // Override the chain ID methods to ensure consistency
-          request: async (args: any) => {
-            // Intercept eth_chainId requests to ensure consistent chain ID
-            if (args.method === 'eth_chainId') {
-              return HYPERLIQUID_CHAIN_ID;
-            }
-            return window.ethereum.request(args);
-          }
-        },
-        transport,
-        isTestnet: isTestnet,
-        signatureChainId: HYPERLIQUID_CHAIN_ID, // Use hex format consistently
-      })
-    : null;
-
-  // Alternative wallet client configuration that might work better
-  const createWalletClient = () => {
-    if (!isConnected || !window.ethereum || !isCorrectNetwork) {
+  const fetchSpecificVaultDetails = async (vaultAddress: string, userAddress: string) => {
+    if (!vaultAddress || !userAddress) {
       return null;
     }
-
     try {
-      // Create a custom wallet object that ensures proper chain ID handling
-      const customWallet = {
-        ...window.ethereum,
-        request: async (args: any) => {
-          const result = await window.ethereum.request(args);
-          
-          // Ensure chain ID is always returned in the expected format
-          if (args.method === 'eth_chainId') {
-            // Convert to hex if it's decimal
-            if (typeof result === 'number') {
-              return `0x${result.toString(16)}`;
-            }
-            // Ensure it's the correct Arbitrum chain ID
-            if (result === '0xa4b1' || result === ARBITRUM_CHAIN_ID_DECIMAL || result === '42161') {
-              return HYPERLIQUID_CHAIN_ID;
-            }
-          }
-          
-          return result;
+      const res = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+        type: 'vaultDetails',
+        vaultAddress: vaultAddress,
+        user: userAddress,
+      });
+      return res.data;
+    } catch (err) {
+      console.error(`Failed to fetch vault details for user ${userAddress}:`, err);
+      return null;
+    }
+  };
+
+  const getUserNonce = async (userAddress: string) => {
+    try {
+      const res = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+        type: 'clearinghouseState',
+        user: userAddress,
+      });
+      return res.data.nonce || 0;
+    } catch (err) {
+      console.error('Failed to fetch user nonce:', err);
+      return 0;
+    }
+  };
+
+  const signL1Action = async (
+    connection: any,
+    action: any,
+    activePool: number | null = null,
+    nonce: number
+  ) => {
+    const normalizedAction = JSON.parse(JSON.stringify(action));
+    if (normalizedAction.vaultAddress) {
+      normalizedAction.vaultAddress = normalizedAction.vaultAddress.toLowerCase();
+    }
+    if (normalizedAction.destination) {
+      normalizedAction.destination = normalizedAction.destination.toLowerCase();
+    }
+
+    const msgToSign = {
+      domain: {
+        name: 'HyperLiquid',
+        version: '1',
+        chainId: 42161, // Arbitrum One
+        verifyingContract: '0x0000000000000000000000000000000000000000',
+      },
+      types: {
+        Agent: [
+          { name: 'source', type: 'string' },
+          { name: 'connectionId', type: 'bytes32' },
+        ],
+      },
+      primaryType: 'Agent',
+      message: {
+        source: activePool === null ? 'a' : 'b',
+        connectionId: connection,
+      },
+    };
+
+    const types = {
+      ...msgToSign.types,
+      HyperLiquid: [
+        { name: 'hyperliquidChain', type: 'string' },
+        { name: 'signatureChainId', type: 'uint256' },
+        { name: 'time', type: 'uint64' },
+        { name: 'nonce', type: 'uint64' },
+        { name: 'action', type: 'string' },
+      ],
+    };
+
+    const message = {
+      hyperliquidChain: 'Mainnet',
+      signatureChainId: 421614,
+      time: Date.now(),
+      nonce,
+      action: JSON.stringify(normalizedAction), 
+    };
+
+    return {
+      domain: msgToSign.domain,
+      types,
+      primaryType: 'HyperLiquid',
+      message,
+    };
+  };
+
+  const submitSignedTransaction = async (signature: string, action: any, nonce: number, vaultAddress?: string) => {
+    try {
+      console.log('Submitting transaction to HyperLiquid API...');
+      console.log('Action:', action);
+      console.log('Signature:', signature);
+      console.log('Nonce:', nonce);
+
+      const sig_hex = signature.startsWith('0x') ? signature.slice(2) : signature;
+      
+      if (sig_hex.length !== 130) {
+        throw new Error(`Invalid signature length: ${sig_hex.length}, expected 130`);
+      }
+      
+      const r = "0x" + sig_hex.slice(0, 64);  
+      const s = "0x" + sig_hex.slice(64, 128);  
+      const v = parseInt(sig_hex.slice(128, 130), 16);  
+      
+      const payload: any = {
+        action: action,
+        nonce: nonce,
+        signature: {
+          r: r,
+          s: s, 
+          v: v
         }
       };
-
-      return new hl.ExchangeClient({ 
-        wallet: customWallet,
-        transport,
-        isTestnet: isTestnet,
-        signatureChainId: HYPERLIQUID_CHAIN_ID,
+      
+      if (vaultAddress) {
+        payload.vaultAddress = vaultAddress.toLowerCase();
+      }
+      
+      console.log('Sending payload to HyperLiquid:', JSON.stringify(payload, null, 2));
+      
+      const response = await axios.post(`${HYPERLIQUID_API_URL}/exchange`, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
       });
-    } catch (error) {
-      console.error('Error creating wallet client:', error);
-      return null;
-    }
-  };
-
-  // Use the alternative wallet client
-  const alternativeWalletClient = createWalletClient();
-
-  const handleNetworkSwitch = async () => {
-    try {
-      setError(null);
-      await switchChain(HYPERLIQUID_CHAIN_ID);
-    } catch (error: any) {
-      console.error('Failed to switch network:', error);
-      if (error.code === 4902) {
-        try {
-          await addChain(NETWORKS.ARBITRUM);
-          await switchChain(HYPERLIQUID_CHAIN_ID);
-        } catch (addError) {
-          setError('Failed to add Arbitrum network to MetaMask');
+      
+      console.log('HyperLiquid API response:', response.data);
+      
+      if (response.data.status === 'ok') {
+        return response.data;
+      } else {
+        const errorMsg = response.data.response || 'Unknown error';
+        console.error('Transaction failed:', errorMsg);
+        
+        if (errorMsg.toLowerCase().includes('does not exist')) {
+          throw new Error();
         }
+        
+        throw new Error(`Transaction failed: ${errorMsg}`);
+      }
+    } catch (error: any) {
+      console.error('Error submitting transaction:', error);
+      
+      if (error.response) {
+        const errorMessage = error.response.data?.error || error.response.data?.response || error.response.statusText;
+        if (errorMessage?.toLowerCase().includes('does not exist')) {
+          throw new Error();
+        }
+        throw new Error(`HyperLiquid API error: ${errorMessage}`);
+      } else if (error.request) {
+        throw new Error('Network error: Unable to reach HyperLiquid API');
       } else {
-        setError('Failed to switch to Arbitrum network');
+        throw new Error(error.message || 'Transaction submission failed');
       }
     }
   };
 
-  const fetchVaultDetails = async () => {
-    if (!MY_VAULT_ADDRESS || MY_VAULT_ADDRESS === "0x...") {
-      setError('Vault address not configured');
+  const handleVaultAction = async (action: 'deposit' | 'withdraw') => {
+    if (!actionAmount || parseFloat(actionAmount) <= 0) {
+      setError('Please enter a valid, positive amount.');
       return;
     }
 
+    if (!account || !isConnected) {
+      setError('Please connect your wallet first.');
+      return;
+    }
+
+    const normalizedAccount = account.toLowerCase();
+    const normalizedVaultAddress = MY_VAULT_ADDRESS?.toLowerCase();
+
+    setIsLoading(true);
+    setError(null);
+
     try {
-      setError(null);
-      setIsLoading(true);
-      
-      console.log('Fetching vault details for:', MY_VAULT_ADDRESS);
-      
-      const details = await publicClient.vaultDetails({ vaultAddress: MY_VAULT_ADDRESS });
-      console.log('Vault details:', details);
-      setVaultDetails(details);
-      
-      if (account) {
-        console.log('Fetching user-specific vault details for:', account);
-        const userDetails = await publicClient.vaultDetails({ 
-          vaultAddress: MY_VAULT_ADDRESS, 
-          user: account 
+      try {
+        const walletCheckRes = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+          type: 'clearinghouseState',
+          user: normalizedAccount,
         });
-        console.log('User vault details:', userDetails);
-        setUserVaultDetails(userDetails);
+        
+        if (!walletCheckRes.data) {
+          throw new Error();
+        }
+      } catch (walletError) {
+        console.log(walletError);
+        setError("failed");
+        setIsLoading(false);
+        return;
       }
+
+      // Get user's nonce
+      const nonce = await getUserNonce(normalizedAccount);
       
-      const summaries = await publicClient.vaultSummaries();
-      console.log('Vault summaries:', summaries);
-      setVaultSummaries(summaries);
-      
-    } catch (err) {
-      console.error('Error fetching vault details:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch vault details');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+      const vaultAction = {
+        type: 'vaultTransfer',
+        vaultAddress: normalizedVaultAddress,
+        isDeposit: action === 'deposit',
+        usd: parseFloat(actionAmount) * 1000000,
+      };
 
-  const ensureCorrectNetwork = async () => {
-    if (!isCorrectNetwork) {
-      throw new Error('Please switch to Arbitrum One network first');
-    }
-    
-    // Double-check the network is correct before proceeding
-    const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
-    console.log('Current chain ID from MetaMask:', currentChainId);
-    console.log('Expected chain ID:', HYPERLIQUID_CHAIN_ID);
-    
-    if (currentChainId !== HYPERLIQUID_CHAIN_ID) {
-      throw new Error(`Network mismatch. Expected ${HYPERLIQUID_CHAIN_ID}, got ${currentChainId}`);
-    }
-  };
+      const signaturePayload = await signL1Action(
+        '0x0000000000000000000000000000000000000000000000000000000000000000',
+        vaultAction,
+        null,
+        nonce
+      );
 
-  const handleVaultDeposit = async () => {
-    const clientToUse = alternativeWalletClient || walletClient;
-    
-    if (!clientToUse) {
-      if (!isConnected) {
-        setError('Please connect your wallet first');
-      } else if (!isCorrectNetwork) {
-        setError('Please switch to Arbitrum One network');
-      }
-      return;
-    }
-
-    if (!actionAmount || parseFloat(actionAmount) <= 0) {
-      setError('Please enter a valid amount');
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      // Ensure we're on the correct network
-      await ensureCorrectNetwork();
-
-      console.log('Depositing to vault:', MY_VAULT_ADDRESS, 'Amount:', actionAmount);
-      console.log('Using wallet client with chain ID:', HYPERLIQUID_CHAIN_ID);
-
-      const result = await clientToUse.vaultTransfer({
-        vaultAddress: MY_VAULT_ADDRESS,
-        isDeposit: true,
-        usd: parseFloat(actionAmount)
+      const signature = await (window as any).ethereum.request({
+        method: 'eth_signTypedData_v4',
+        params: [normalizedAccount, JSON.stringify(signaturePayload)],
       });
 
-      console.log('Deposit result:', result);
-      
-      if (result && (result as any).status === 'ok') {
-        alert('Vault deposit successful!');
+      const result = await submitSignedTransaction(signature, vaultAction, nonce, normalizedVaultAddress);
+
+      if (result.status === 'ok') {
+        alert(`${action.charAt(0).toUpperCase() + action.slice(1)} successful!`);
         setActionAmount('');
-        await fetchVaultDetails();
-      } else {
-        throw new Error((result as any)?.response?.data || 'Deposit failed');
+        
+        if (configInfo) {
+          const leaderDetails = await fetchSpecificVaultDetails(normalizedVaultAddress!, configInfo.wallet_address.toLowerCase());
+          setLeaderVaultDetails(leaderDetails);
+        }
+        if (normalizedAccount) {
+          const userDetails = await fetchSpecificVaultDetails(normalizedVaultAddress!, normalizedAccount);
+          if (userDetails?.followers && userDetails.followers.length > 0) {
+            setConnectedUserSpecificVaultDetails(userDetails.followers[0]);
+          } else {
+            setConnectedUserSpecificVaultDetails(null);
+          }
+        }
       }
-    } catch (err) {
-      console.error('Deposit error:', err);
+    } catch (err: any) {
+      console.error('Transaction error:', err);
+      let errorMessage = 'Transaction failed';
       
-      // Provide more specific error messages for chain ID issues
-      if (err instanceof Error && err.message.includes('chainId')) {
-        setError(`Chain ID mismatch error. Please ensure MetaMask is on Arbitrum One (Chain ID: ${ARBITRUM_CHAIN_ID_DECIMAL}). Current error: ${err.message}`);
-      } else {
-        setError(err instanceof Error ? err.message : 'Deposit failed');
+      if (err.code === 4001) {
+        errorMessage = 'Transaction rejected by user';
+      } else if (err.message) {
+        errorMessage = err.message;
       }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleVaultWithdraw = async () => {
-    const clientToUse = alternativeWalletClient || walletClient;
-    
-    if (!clientToUse) {
-      if (!isConnected) {
-        setError('Please connect your wallet first');
-      } else if (!isCorrectNetwork) {
-        setError('Please switch to Arbitrum One network');
-      }
-      return;
-    }
-
-    if (!actionAmount || parseFloat(actionAmount) <= 0) {
-      setError('Please enter a valid amount');
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      // Ensure we're on the correct network
-      await ensureCorrectNetwork();
-
-      console.log('Withdrawing from vault:', MY_VAULT_ADDRESS, 'Amount:', actionAmount);
-
-      const result = await clientToUse.vaultTransfer({
-        vaultAddress: MY_VAULT_ADDRESS,
-        isDeposit: false,
-        usd: parseFloat(actionAmount)
-      });
-
-      console.log('Withdrawal result:', result);
       
-      if (result && (result as any).status === 'ok') {
-        alert('Vault withdrawal successful!');
-        setActionAmount('');
-        await fetchVaultDetails();
-      } else {
-        throw new Error((result as any)?.response?.data || 'Withdrawal failed');
-      }
-    } catch (err) {
-      console.error('Withdrawal error:', err);
-      
-      // Provide more specific error messages for chain ID issues
-      if (err instanceof Error && err.message.includes('chainId')) {
-        setError(`Chain ID mismatch error. Please ensure MetaMask is on Arbitrum One (Chain ID: ${ARBITRUM_CHAIN_ID_DECIMAL}). Current error: ${err.message}`);
-      } else {
-        setError(err instanceof Error ? err.message : 'Withdrawal failed');
-      }
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleBridgeWithdraw = async () => {
-    const clientToUse = alternativeWalletClient || walletClient;
-    
-    if (!clientToUse || !account) {
-      if (!isConnected) {
-        setError('Please connect your wallet first');
-      } else if (!isCorrectNetwork) {
-        setError('Please switch to Arbitrum One network');
-      }
-      return;
-    }
-
     if (!actionAmount || parseFloat(actionAmount) <= 0) {
-      setError('Please enter a valid amount');
+      setError('Please enter a valid, positive amount.');
       return;
     }
+    if (!account) {
+      setError('Please connect your wallet first.');
+      return;
+    }
+    
+    const normalizedAccount = account.toLowerCase();
+    
+    setIsLoading(true);
+    setError(null);
 
     try {
-      setIsLoading(true);
-      setError(null);
+      try {
+        const walletCheckRes = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+          type: 'clearinghouseState',
+          user: normalizedAccount,
+        });
+        
+        if (!walletCheckRes.data) {
+          throw new Error('Wallet not found on HyperLiquid');
+        }
+      } catch (walletError) {
+        console.log(walletError);
+        setError('Your wallet is not registered on HyperLiquid.');
+        setIsLoading(false);
+        return;
+      }
 
-      // Ensure we're on the correct network
-      await ensureCorrectNetwork();
+      const nonce = await getUserNonce(normalizedAccount);
+      
+      const withdrawAction = {
+        type: 'withdraw',
+        hyperliquidChain: 'Mainnet',
+        signatureChainId: 421614,
+        amount: (parseFloat(actionAmount) * 1000000).toString(),
+        time: Date.now(),
+        destination: normalizedAccount,
+      };
 
-      console.log('Bridge withdrawal to:', account, 'Amount:', actionAmount);
+      const signaturePayload = await signL1Action(
+        '0x0000000000000000000000000000000000000000000000000000000000000000',
+        withdrawAction,
+        null,
+        nonce
+      );
 
-      const result = await clientToUse.withdraw3({
-        destination: account,
-        amount: actionAmount
+      const signature = await (window as any).ethereum.request({
+        method: 'eth_signTypedData_v4',
+        params: [normalizedAccount, JSON.stringify(signaturePayload)],
       });
 
-      console.log('Bridge withdrawal result:', result);
-      
-      if (result && (result as any).status === 'ok') {
+      const result = await submitSignedTransaction(signature, withdrawAction, nonce);
+
+      if (result.status === 'ok') {
         alert('Bridge withdrawal successful!');
         setActionAmount('');
-        await fetchVaultDetails();
-      } else {
-        throw new Error((result as any)?.response?.data || 'Bridge withdrawal failed');
+        
+        const userDetails = await fetchSpecificVaultDetails(MY_VAULT_ADDRESS?.toLowerCase()!, normalizedAccount);
+        if (userDetails?.followers && userDetails.followers.length > 0) {
+          setConnectedUserSpecificVaultDetails(userDetails.followers[0]);
+        } else {
+          setConnectedUserSpecificVaultDetails(null);
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Bridge withdrawal error:', err);
+      let errorMessage = 'Bridge withdrawal failed';
       
-      // Provide more specific error messages for chain ID issues
-      if (err instanceof Error && err.message.includes('chainId')) {
-        setError(`Chain ID mismatch error. Please ensure MetaMask is on Arbitrum One (Chain ID: ${ARBITRUM_CHAIN_ID_DECIMAL}). Current error: ${err.message}`);
-      } else {
-        setError(err instanceof Error ? err.message : 'Bridge withdrawal failed');
+      if (err.code === 4001) {
+        errorMessage = 'Transaction rejected by user';
+      } else if (err.message) {
+        errorMessage = err.message;
       }
+      
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchVaultDetails();
-  }, [account, isConnected, isCorrectNetwork]);
+    const getLeaderDetails = async () => {
+      if (configInfo && MY_VAULT_ADDRESS) {
+        const details = await fetchSpecificVaultDetails(MY_VAULT_ADDRESS, configInfo.wallet_address);
+        setLeaderVaultDetails(details);
+      }
+    };
+    getLeaderDetails();
+  }, [configInfo]);
+
+  useEffect(() => {
+    const getUserDetailsAndSetOwner = async () => {
+      if (isConnected && account && MY_VAULT_ADDRESS) {
+        setIsOwnerConnected(account.toLowerCase() === configInfo?.wallet_address.toLowerCase());
+        
+        const details = await fetchSpecificVaultDetails(MY_VAULT_ADDRESS, account);
+        if (details?.followers && details.followers.length > 0 && details.followers[0].user.toLowerCase() === account.toLowerCase()) {
+          setConnectedUserSpecificVaultDetails(details.followers[0]);
+        } else {
+          setConnectedUserSpecificVaultDetails(null);
+        }
+      } else {
+        setIsOwnerConnected(false);
+        setConnectedUserSpecificVaultDetails(null);
+      }
+    };
+    getUserDetailsAndSetOwner();
+  }, [isConnected, account, configInfo]);
 
   const formatAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
+
+  const renderFollowerDetails = (follower: Follower, title: string) => (
+    <div className="bg-white rounded-lg shadow-md p-6">
+      <h3 className="text-xl font-bold mb-4 text-gray-800">{title}</h3>
+      <div className="border-b pb-2 mb-2 last:border-b-0 last:pb-0 last:mb-0">
+        <p><strong>User:</strong> {formatAddress(follower.user)}</p>
+        <p><strong>Vault Equity:</strong> ${parseFloat(follower.vaultEquity).toFixed(2)}</p>
+        <p><strong>PNL:</strong> ${parseFloat(follower.pnl).toFixed(2)}</p>
+        <p><strong>All Time PNL:</strong> ${parseFloat(follower.allTimePnl).toFixed(2)}</p>
+        <p><strong>Days Following:</strong> {follower.daysFollowing}</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-6">
@@ -344,27 +439,8 @@ export default function HyperLiquidDashboard() {
           {isConnected ? (
             <div>
               <p className="text-green-600 font-semibold">✅ Connected: {formatAddress(account!)}</p>
-              <p className="text-gray-600">Network: {currentNetworkName}</p>
-              {!isCorrectNetwork && (
-                <div className="mt-3">
-                  <p className="text-orange-600 font-semibold mb-2">
-                    ⚠️ Wrong Network - HyperLiquid requires Arbitrum One (Chain ID: {ARBITRUM_CHAIN_ID_DECIMAL})
-                  </p>
-                  <button 
-                    onClick={handleNetworkSwitch}
-                    className="bg-blue-500 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-600"
-                  >
-                    Switch to Arbitrum One
-                  </button>
-                </div>
-              )}
-              {vaultDetails?.leader && (
-                <p className="text-gray-600">
-                  Vault Leader: {formatAddress(vaultDetails.leader)}
-                  {account?.toLowerCase() === vaultDetails.leader.toLowerCase() && (
-                    <span className="text-blue-600 ml-2">(You)</span>
-                  )}
-                </p>
+              {isOwnerConnected && (
+                <p className="text-blue-600 font-semibold">Admin Access</p>
               )}
             </div>
           ) : (
@@ -382,78 +458,20 @@ export default function HyperLiquidDashboard() {
       </div>
 
       {error && (
-        <div className="text-red-600 bg-red-100 p-4 rounded-lg text-center">
-          <strong>Error:</strong> {error}
-          <br />
-          <button 
-            onClick={() => setError(null)}
-            className="mt-2 text-sm underline hover:no-underline"
-          >
-            Dismiss
-          </button>
+        <div className="text-red-600 bg-red-100 p-4 rounded-lg text-center break-words">
+          {error}
         </div>
       )}
 
-      {process.env.NODE_ENV === 'development' && (
-        <div className="bg-gray-100 rounded-lg p-4 text-sm">
-          <strong>Debug Info:</strong>
-          <br />Vault Address: {MY_VAULT_ADDRESS}
-          <br />Connected Account: {account || 'None'}
-          <br />Chain ID: {chainId || 'None'} ({chainId ? formatChainId(chainId) : 'N/A'})
-          <br />Network: {currentNetworkName}
-          <br />Correct Network: {isCorrectNetwork ? 'Yes' : 'No'}
-          <br />Expected Chain ID: {HYPERLIQUID_CHAIN_ID} ({ARBITRUM_CHAIN_ID_DECIMAL})
-          <br />Testnet: {isTestnet ? 'Yes' : 'No'}
-          <br />Vault Details: {vaultDetails ? 'Loaded' : 'Not loaded'}
-          <br />Original Wallet Client: {walletClient ? 'Ready' : 'Not ready'}
-          <br />Alternative Wallet Client: {alternativeWalletClient ? 'Ready' : 'Not ready'}
-        </div>
+      {leaderVaultDetails?.followers && leaderVaultDetails.followers.length > 0 && configInfo && (
+        renderFollowerDetails(leaderVaultDetails.followers[0], `Leader's Vault Details (${formatAddress(configInfo.wallet_address)})`)
       )}
 
-      {vaultDetails?.followers && vaultDetails.followers.length > 0 && (
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h3 className="text-xl font-bold mb-4 text-gray-800">
-            Vault Followers ({vaultDetails.followers.length})
-          </h3>
-          <div className="space-y-4 max-h-96 overflow-y-auto">
-            {vaultDetails.followers.map((follower: any, index: number) => (
-              <div key={follower.user} className="border-b pb-4 mb-4 last:border-b-0 last:pb-0 last:mb-0">
-                <p>
-                  <strong>User:</strong> {formatAddress(follower.user)}
-                  {follower.user.toLowerCase() === vaultDetails.leader?.toLowerCase() && (
-                    <span className="text-blue-600 ml-2">(Leader)</span>
-                  )}
-                  {follower.user.toLowerCase() === account?.toLowerCase() && (
-                    <span className="text-green-600 ml-2">(You)</span>
-                  )}
-                </p>
-                <p><strong>Vault Equity:</strong> ${parseFloat(follower.vaultEquity).toFixed(2)}</p>
-                <p><strong>PNL:</strong> ${parseFloat(follower.pnl).toFixed(2)}</p>
-                <p><strong>All Time PNL:</strong> ${parseFloat(follower.allTimePnl).toFixed(2)}</p>
-                <p><strong>Days Following:</strong> {follower.daysFollowing}</p>
-              </div>
-            ))}
-          </div>
-        </div>
+      {isConnected && connectedUserSpecificVaultDetails && (
+        renderFollowerDetails(connectedUserSpecificVaultDetails, `Your Vault Details (${formatAddress(account!)})`)
       )}
 
-      {isConnected && userVaultDetails?.followers && userVaultDetails.followers.length > 0 && (
-        <div className="bg-blue-50 rounded-lg border-2 border-blue-200 p-6">
-          <h3 className="text-xl font-bold mb-4 text-blue-800">
-            Your Vault Details ({formatAddress(account!)})
-          </h3>
-          {userVaultDetails.followers.map((follower: any) => (
-            <div key={follower.user} className="space-y-2">
-              <p><strong>Vault Equity:</strong> ${parseFloat(follower.vaultEquity).toFixed(2)}</p>
-              <p><strong>PNL:</strong> ${parseFloat(follower.pnl).toFixed(2)}</p>
-              <p><strong>All Time PNL:</strong> ${parseFloat(follower.allTimePnl).toFixed(2)}</p>
-              <p><strong>Days Following:</strong> {follower.daysFollowing}</p>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {isConnected && isCorrectNetwork && (
+      {isConnected && (
         <div className="bg-white rounded-lg shadow-md p-6 border-2 border-indigo-500">
           <h3 className="text-xl font-bold mb-4 text-gray-800">Vault Operations</h3>
           <div className="space-y-4">
@@ -466,23 +484,23 @@ export default function HyperLiquidDashboard() {
             />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <button 
-                onClick={handleVaultDeposit} 
+                onClick={() => handleVaultAction('deposit')} 
                 disabled={isLoading}
-                className="bg-green-500 text-white py-2 rounded-lg font-semibold hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-green-500 text-white py-2 rounded-lg font-semibold hover:bg-green-600 disabled:opacity-50"
               >
                 {isLoading ? 'Processing...' : 'Vault Deposit'}
               </button>
               <button 
-                onClick={handleVaultWithdraw} 
+                onClick={() => handleVaultAction('withdraw')} 
                 disabled={isLoading}
-                className="bg-orange-500 text-white py-2 rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-orange-500 text-white py-2 rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50"
               >
                 {isLoading ? 'Processing...' : 'Vault Withdraw'}
               </button>
               <button 
                 onClick={handleBridgeWithdraw} 
                 disabled={isLoading}
-                className="bg-red-500 text-white py-2 rounded-lg font-semibold hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-red-500 text-white py-2 rounded-lg font-semibold hover:bg-red-600 disabled:opacity-50"
               >
                 {isLoading ? 'Processing...' : 'Bridge Withdraw'}
               </button>
@@ -491,59 +509,13 @@ export default function HyperLiquidDashboard() {
         </div>
       )}
 
-      {isConnected && !isCorrectNetwork && (
-        <div className="bg-yellow-50 rounded-lg border-2 border-yellow-200 p-6 text-center">
-          <h3 className="text-lg font-bold text-yellow-800 mb-2">Network Switch Required</h3>
-          <p className="text-yellow-700 mb-4">
-            HyperLiquid operations require the Arbitrum One network (Chain ID: {ARBITRUM_CHAIN_ID_DECIMAL}). Please switch networks to continue.
-          </p>
-          <button 
-            onClick={handleNetworkSwitch}
-            className="bg-yellow-500 text-white px-6 py-2 rounded-lg font-semibold hover:bg-yellow-600"
-          >
-            Switch to Arbitrum One
-          </button>
-        </div>
-      )}
-
-      {vaultSummaries.length > 0 && (
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h3 className="text-xl font-bold mb-4 text-gray-800">All Vault Summaries</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {vaultSummaries.slice(0, 6).map((vault: any) => (
-              <div key={vault.vaultAddress} className="border rounded-lg p-4">
-                <p className="text-sm text-gray-600 mb-2">
-                  <strong>Vault:</strong> {formatAddress(vault.vaultAddress)}
-                </p>
-                <p className="text-sm">
-                  <strong>Leader:</strong> {formatAddress(vault.leader)}
-                </p>
-                <p className="text-sm">
-                  <strong>Total Equity:</strong> ${parseFloat(vault.totalVaultEquity || '0').toFixed(2)}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!isConnected && (
+      {isConnected && !isOwnerConnected && (
         <div className="bg-gray-100 rounded-lg p-6 text-center">
           <p className="text-gray-600">
-            Connect your wallet to access vault operations and view your specific vault details.
+            You are connected but don't have admin access to this vault.
           </p>
         </div>
       )}
-
-      <div className="text-center">
-        <button 
-          onClick={fetchVaultDetails}
-          disabled={isLoading}
-          className="bg-gray-500 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {isLoading ? 'Loading...' : 'Refresh Data'}
-        </button>
-      </div>
     </div>
   );
 }
